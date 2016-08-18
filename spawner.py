@@ -143,5 +143,60 @@ class Vcenter_obj_tpl(object):
 
 
 class Spawner(Vcenter_base, Vcenter_obj_tpl):
-    pass
+    def create_vm(self, name, flavor, storage_name, cluster=None, host=None):
+        disk_size = flavor['disk_size']
+        memory = flavor['memory']
+        cpu_number = flavor['cpu_number']
+        storage_name = flavor['storage_name']
 
+        if host:
+            host_obj = self.get_obj([vim.HostSystem], host)
+            vm_folder = host_obj.parent.parent.parent.vmFolder
+            resource_pool = host_obj.parent.resourcePool
+        elif cluster:
+            host_obj = None
+            cluster_obj = self.get_obj([vim.ClusterComputeResource], cluster)
+            vm_folder = cluster_obj.parent.parent.vmFolder
+            resource_pool = cluster_obj.resourcePool
+        else:
+            print "Need to specify Cluster or Host name where you want to create vm."
+            sys.exit(1)
+
+        scsi_spec = self.controller_info()
+        disk_spec = self.disk_info(disk_size, scsi_spec)
+        nic_spec = self.nic_info()
+        dev_changes = list()
+        dev_changes.append(scsi_spec)
+        dev_changes.append(disk_spec)
+        dev_changes.append(nic_spec)
+
+        # TODO Check if name exist
+        # TODO Check if storage exist
+        # TODO return vm object
+
+        vmx_file = self.vmx_file_info(storage_name, name)
+
+        self.config = vim.vm.ConfigSpec(
+            name=name,
+            memoryMB=memory,
+            numCPUs=cpu_number,
+            guestId="ubuntu64Guest",
+            files=vmx_file,
+            deviceChange=dev_changes,
+        )
+
+        print "Creating VM {}...".format(name)
+
+        task = vm_folder.CreateVM_Task(config=self.config, pool=resource_pool, host=host_obj)
+        self.wait_for_tasks(self.service_instance, [task])
+
+
+
+if __name__ == "__main__":
+    user_data = {'vcenter_ip': '172.16.0.145', 'vcenter_user': 'root', 'vcenter_password': 'vmware'}
+    vm_flavor = {'disk_size': 1, 'memory': 128, 'cpu_number': 1}
+
+    spawn = Spawner(user_data)
+    spawn.connect_to_vcenter()
+
+    # spawn.create_vm(name='TestVM5', flavor=vm_flavor, cluster='Cluster2', storage_name='nfs')
