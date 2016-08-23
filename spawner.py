@@ -147,31 +147,31 @@ class Vcenter_obj_tpl(object):
                                    vmPathName=datastore_path)
         return vmx_file
 
-    def dvs_info(self, dvs_name):
+    def dvs_info(self, dvs_name, private_vlan=None):
         pvlan_configs = []
         dvs_create_spec = vim.DistributedVirtualSwitch.CreateSpec()
         dvs_config_spec = vim.dvs.VmwareDistributedVirtualSwitch.ConfigSpec()
-        for pvlan_idx in range(100, 2001, 2):
-            # promiscuous  pvlan config
-            pvlan_map_entry = vim.dvs.VmwareDistributedVirtualSwitch.PvlanMapEntry()
-            pvlan_config_spec = vim.dvs.VmwareDistributedVirtualSwitch.PvlanConfigSpec()
-            pvlan_map_entry.primaryVlanId = pvlan_idx
-            pvlan_map_entry.secondaryVlanId = pvlan_idx
-            pvlan_map_entry.pvlanType = "promiscuous"
-            pvlan_config_spec.pvlanEntry = pvlan_map_entry
-            pvlan_config_spec.operation = vim.ConfigSpecOperation.add
-            # isolated pvlan config
-            pvlan_map_entry2 = vim.dvs.VmwareDistributedVirtualSwitch.PvlanMapEntry()
-            pvlan_config_spec2 = vim.dvs.VmwareDistributedVirtualSwitch.PvlanConfigSpec()
-            pvlan_map_entry2.primaryVlanId = pvlan_idx
-            pvlan_map_entry2.secondaryVlanId = pvlan_idx + 1
-            pvlan_map_entry2.pvlanType = "isolated"
-            pvlan_config_spec2.pvlanEntry = pvlan_map_entry2
-            pvlan_config_spec2.operation = vim.ConfigSpecOperation.add
-            pvlan_configs.append(pvlan_config_spec)
-            pvlan_configs.append(pvlan_config_spec2)
-        dvs_config_spec.pvlanConfigSpec = pvlan_configs
-
+        if private_vlan:
+            for pvlan_idx in range(100, 2001, 2):
+                # promiscuous  pvlan config
+                pvlan_map_entry = vim.dvs.VmwareDistributedVirtualSwitch.PvlanMapEntry()
+                pvlan_config_spec = vim.dvs.VmwareDistributedVirtualSwitch.PvlanConfigSpec()
+                pvlan_map_entry.primaryVlanId = pvlan_idx
+                pvlan_map_entry.secondaryVlanId = pvlan_idx
+                pvlan_map_entry.pvlanType = "promiscuous"
+                pvlan_config_spec.pvlanEntry = pvlan_map_entry
+                pvlan_config_spec.operation = vim.ConfigSpecOperation.add
+                # isolated pvlan config
+                pvlan_map_entry2 = vim.dvs.VmwareDistributedVirtualSwitch.PvlanMapEntry()
+                pvlan_config_spec2 = vim.dvs.VmwareDistributedVirtualSwitch.PvlanConfigSpec()
+                pvlan_map_entry2.primaryVlanId = pvlan_idx
+                pvlan_map_entry2.secondaryVlanId = pvlan_idx + 1
+                pvlan_map_entry2.pvlanType = "isolated"
+                pvlan_config_spec2.pvlanEntry = pvlan_map_entry2
+                pvlan_config_spec2.operation = vim.ConfigSpecOperation.add
+                pvlan_configs.append(pvlan_config_spec)
+                pvlan_configs.append(pvlan_config_spec2)
+            dvs_config_spec.pvlanConfigSpec = pvlan_configs
         dvs_config_spec.name = dvs_name
         dvs_create_spec.configSpec = dvs_config_spec
         return dvs_create_spec
@@ -197,15 +197,19 @@ class Vcenter_obj_tpl(object):
         dvs_config_spec.host = dvs_host_configs
         return dvs_config_spec
 
-    def dvs_pg_info(self, dv_pg_name, dv_pg_ports_num):
+    def dvs_pg_info(self, dv_pg_name, dv_pg_ports_num, vlan_type, vlan_list):
         dv_pg_spec = vim.dvs.DistributedVirtualPortgroup.ConfigSpec()
         dv_pg_spec.name = dv_pg_name
         dv_pg_spec.numPorts = int(dv_pg_ports_num)
         dv_pg_spec.type = vim.dvs.DistributedVirtualPortgroup.PortgroupType.earlyBinding
         dv_pg_spec.defaultPortConfig = vim.dvs.VmwareDistributedVirtualSwitch.VmwarePortConfigPolicy()
         dv_pg_spec.defaultPortConfig.securityPolicy = vim.dvs.VmwareDistributedVirtualSwitch.SecurityPolicy()
-        dv_pg_spec.defaultPortConfig.vlan = vim.dvs.VmwareDistributedVirtualSwitch.TrunkVlanSpec()
-        dv_pg_spec.defaultPortConfig.vlan.vlanId = [vim.NumericRange(start=1, end=4094)]
+        if vlan_type == 'access':
+            dv_pg_spec.defaultPortConfig.vlan = vim.dvs.VmwareDistributedVirtualSwitch.VlanIdSpec()
+            dv_pg_spec.defaultPortConfig.vlan.vlanId = vlan_list[0]
+        elif vlan_type == 'trunk':
+            dv_pg_spec.defaultPortConfig.vlan = vim.dvs.VmwareDistributedVirtualSwitch.TrunkVlanSpec()
+            dv_pg_spec.defaultPortConfig.vlan.vlanId = [vim.NumericRange(start=vlan_list[0], end=vlan_list[1])]
         dv_pg_spec.defaultPortConfig.securityPolicy.allowPromiscuous = vim.BoolPolicy(value=True)
         dv_pg_spec.defaultPortConfig.securityPolicy.forgedTransmits = vim.BoolPolicy(value=True)
         dv_pg_spec.defaultPortConfig.vlan.inherited = False
@@ -280,8 +284,8 @@ class Vm(Vcenter_base, Vcenter_obj_tpl):
 
 
 class Dvs(Vcenter_base, Vcenter_obj_tpl):
-    def create(self, dvs_name):
-        dvs_spec = self.dvs_info(dvs_name)
+    def create(self, dvs_name, private_vlan):
+        dvs_spec = self.dvs_info(dvs_name, private_vlan)
 
         print "Creating DVS: ", dvs_name
 
@@ -305,11 +309,11 @@ class Dvs(Vcenter_base, Vcenter_obj_tpl):
 
 
 class Dvpg(Vcenter_base, Vcenter_obj_tpl):
-    def create(self, dvs_name, dv_pg_ports_num=128, dv_pg_name=None):
+    def create(self, dvs_name, dv_pg_ports_num=128, dv_pg_name=None, vlan_type='access', vlan_list=[0]):
         dvs = self.get_obj([vim.DistributedVirtualSwitch], dvs_name)
         if not dv_pg_name:
             dv_pg_name = dvs_name + '-PG'
-        dv_pg_spec = self.dvs_pg_info(dv_pg_name, dv_pg_ports_num)
+        dv_pg_spec = self.dvs_pg_info(dv_pg_name, dv_pg_ports_num, vlan_type, vlan_list)
         print "Adding PG: {} to DVS: {}".format(dv_pg_name, dvs_name)
         task = dvs.AddDVPortgroup_Task([dv_pg_spec])
         self.wait_for_tasks(self.service_instance, [task])
@@ -328,9 +332,10 @@ if __name__ == '__main__':
 
     # dvs = Dvs(user_data)
     # dvs.connect_to_vcenter()
-    # dvs.create('Contrail1')
-    # dvs.add_hosts(hosts_list=hosts, dvs_name='Contrail1', attach_uplink=False)
+    # dvs.create(dvs_name='Contrail1', private_vlan=False)
+    # dvs.add_hosts(hosts_list=hosts, dvs_name='Contrail1', attach_uplink=True)
 
     # dvpg = Dvpg(user_data)
     # dvpg.connect_to_vcenter()
-    # dvpg.create(dvs_name='Contrail1')
+    # dvpg.create(dvs_name='Contrail1', dv_pg_name='pgg1', vlan_type='access', vlan_list=[0])
+    # dvpg.create(dvs_name='Contrail1', dv_pg_name='pgg2', vlan_type='trunk', vlan_list=[0,1024])
