@@ -111,7 +111,7 @@ class Vcenter_obj_tpl(object):
         disk_spec.device.controllerKey = controller_info.device.key
         return disk_spec
 
-    def nic_info(self, nic_type='Vmxnet3', mac_address=None, label=None):
+    def nic_info(self, nic_type='Vmxnet3', mac_address=None, label=None, dv_pg_obj=None):
         nic_spec = vim.vm.device.VirtualDeviceSpec()
         nic_spec.operation = vim.vm.device.VirtualDeviceSpec.Operation.add
         if nic_type == 'Vmxnet3':
@@ -132,6 +132,9 @@ class Vcenter_obj_tpl(object):
         port = vim.dvs.PortConnection()
         # port.switchUuid = '54 01 36 50 13 35 cf f0-3d ad c9 74 36 95 2f 7e'
         # port.portgroupKey = 'dvportgroup-43'
+        if dv_pg_obj:
+            port.portgroupKey = dv_pg_obj.key
+            port.switchUuid = dv_pg_obj.config.distributedVirtualSwitch.uuid
         nic_spec.device.backing = vim.vm.device.VirtualEthernetCard.DistributedVirtualPortBackingInfo()
         nic_spec.device.backing.port = port
         return nic_spec
@@ -173,7 +176,7 @@ class Vcenter_obj_tpl(object):
         dvs_create_spec.configSpec = dvs_config_spec
         return dvs_create_spec
 
-    def dvs_host_info(self, host, uplink = None):
+    def dvs_host_info(self, host, uplink=None):
         dvs_host_configs = list()
         uplink_port_names = 'dvUplink1'
         dvs_config_spec = vim.DistributedVirtualSwitch.ConfigSpec()
@@ -194,6 +197,21 @@ class Vcenter_obj_tpl(object):
         dvs_config_spec.host = dvs_host_configs
         return dvs_config_spec
 
+    def dvs_pg_info(self, dv_pg_name, dv_pg_ports_num):
+        dv_pg_spec = vim.dvs.DistributedVirtualPortgroup.ConfigSpec()
+        dv_pg_spec.name = dv_pg_name
+        dv_pg_spec.numPorts = int(dv_pg_ports_num)
+        dv_pg_spec.type = vim.dvs.DistributedVirtualPortgroup.PortgroupType.earlyBinding
+        dv_pg_spec.defaultPortConfig = vim.dvs.VmwareDistributedVirtualSwitch.VmwarePortConfigPolicy()
+        dv_pg_spec.defaultPortConfig.securityPolicy = vim.dvs.VmwareDistributedVirtualSwitch.SecurityPolicy()
+        dv_pg_spec.defaultPortConfig.vlan = vim.dvs.VmwareDistributedVirtualSwitch.TrunkVlanSpec()
+        dv_pg_spec.defaultPortConfig.vlan.vlanId = [vim.NumericRange(start=1, end=4094)]
+        dv_pg_spec.defaultPortConfig.securityPolicy.allowPromiscuous = vim.BoolPolicy(value=True)
+        dv_pg_spec.defaultPortConfig.securityPolicy.forgedTransmits = vim.BoolPolicy(value=True)
+        dv_pg_spec.defaultPortConfig.vlan.inherited = False
+        dv_pg_spec.defaultPortConfig.securityPolicy.macChanges = vim.BoolPolicy(value=False)
+        dv_pg_spec.defaultPortConfig.securityPolicy.inherited = False
+        return dv_pg_spec
 
 
 class Vm(Vcenter_base, Vcenter_obj_tpl):
@@ -214,14 +232,20 @@ class Vm(Vcenter_base, Vcenter_obj_tpl):
         disk_spec = self.disk_info(disk_size, self.scsi_spec, self._unit_number)
         self.vm_devices.append(disk_spec)
 
-    def add_nic(self, nic_type='Vmxnet3', mac_address=None):
+    def add_nic(self, nic_type='Vmxnet3', mac_address=None, dv_pg_name=None):
         if self._nic_unit_number >= 0:
             self._nic_unit_number += 1
         else:
             self._nic_unit_number = 0
 
         label = 'nic' + str(self._nic_unit_number)
-        nic_spec = self.nic_info(nic_type, mac_address, label)
+
+        if dv_pg_name:
+            dv_pg_obj = self.get_obj([vim.DistributedVirtualPortgroup], dv_pg_name)
+        else:
+            dv_pg_obj = None
+
+        nic_spec = self.nic_info(nic_type, mac_address, label, dv_pg_obj)
         self.vm_devices.append(nic_spec)
 
     def create(self, name, cpu, memory, storage_name, cluster=None, host=None):
@@ -256,7 +280,7 @@ class Vm(Vcenter_base, Vcenter_obj_tpl):
 
 
 class Dvs(Vcenter_base, Vcenter_obj_tpl):
-    def create_dvs(self, dvs_name):
+    def create(self, dvs_name):
         dvs_spec = self.dvs_info(dvs_name)
 
         print "Creating DVS: ", dvs_name
@@ -280,22 +304,33 @@ class Dvs(Vcenter_base, Vcenter_obj_tpl):
             self.wait_for_tasks(self.service_instance, [task])
 
 
+class Dvpg(Vcenter_base, Vcenter_obj_tpl):
+    def create(self, dvs_name, dv_pg_ports_num=128, dv_pg_name=None):
+        dvs = self.get_obj([vim.DistributedVirtualSwitch], dvs_name)
+        if not dv_pg_name:
+            dv_pg_name = dvs_name + '-PG'
+        dv_pg_spec = self.dvs_pg_info(dv_pg_name, dv_pg_ports_num)
+        print "Adding PG: {} to DVS: {}".format(dv_pg_name, dvs_name)
+        task = dvs.AddDVPortgroup_Task([dv_pg_spec])
+        self.wait_for_tasks(self.service_instance, [task])
+
 
 if __name__ == '__main__':
     user_data = {'vcenter_ip': '172.16.0.145', 'vcenter_user': 'root', 'vcenter_password': 'vmware'}
-    hosts = [{'host': '172.16.0.250', 'uplink': 'vmnic1'}, {'host': '172.16.0.252', 'uplink': 'vmnic1'}, {'host': '172.16.0.253', 'uplink': 'vmnic1'}]
-
-    # spawn = Spawner(user_data)
-    # spawn.connect_to_vcenter()
-    # spawn.create_vm(name='TestVM5', flavor=vm_flavor, cluster='Cluster1', storage_name='nfs')
+    hosts = [{'host': '172.16.0.250', 'uplink': 'vmnic1'}, {'host': '172.16.0.252', 'uplink': 'vmnic1'},
+             {'host': '172.16.0.253', 'uplink': 'vmnic1'}]
 
     # vm = Vm(user_data)
     # vm.connect_to_vcenter()
     # vm.add_disk(1)
-    # vm.add_nic()
-    # vm.create(name='TestVM7', cpu=1, memory=128, storage_name='nfs', cluster='Cluster1')
+    # vm.add_nic(dv_pg_name='Contrail-PG')
+    # vm.create(name='TestVM8', cpu=1, memory=128, storage_name='nfs', cluster='Cluster1')
 
     # dvs = Dvs(user_data)
     # dvs.connect_to_vcenter()
-    # dvs.create_dvs('Contrail')
-    # dvs.add_hosts(hosts_list=hosts, dvs_name='Contrail', attach_uplink=False)
+    # dvs.create('Contrail1')
+    # dvs.add_hosts(hosts_list=hosts, dvs_name='Contrail1', attach_uplink=False)
+
+    # dvpg = Dvpg(user_data)
+    # dvpg.connect_to_vcenter()
+    # dvpg.create(dvs_name='Contrail1')
