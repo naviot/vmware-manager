@@ -241,30 +241,45 @@ class Vm(Vcenter_base, Vcenter_obj_tpl):
             self._nic_unit_number += 1
         else:
             self._nic_unit_number = 0
-
         label = 'nic' + str(self._nic_unit_number)
-
         if dv_pg_name:
             dv_pg_obj = self.get_obj([vim.DistributedVirtualPortgroup], dv_pg_name)
+            if not dv_pg_obj:
+                print "Port group: {} does not exist.".format(dv_pg_name)
         else:
             dv_pg_obj = None
-
         nic_spec = self.nic_info(nic_type, mac_address, label, dv_pg_obj)
         self.vm_devices.append(nic_spec)
 
     def create(self, name, cpu, memory, storage_name, cluster=None, host=None):
+        vm_obj = self.get_obj([vim.VirtualMachine], name)
+        if vm_obj:
+            print "VM({}) already exist. Skip creation VM: {}.".format(name, name)
+            return vm_obj
         if host:
             host_obj = self.get_obj([vim.HostSystem], host)
+            if not host_obj:
+                print "Host({}) does not exist. Skip creation VM: {}.".format(host, name)
+                return
+            if not any(ds.name == storage_name for ds in host_obj.datastore):
+                print "Datastore({}) does not exist on Host({}). Skip creation VM: {}.".format(storage_name, host, name)
+                return
             vm_folder = host_obj.parent.parent.parent.vmFolder
             resource_pool = host_obj.parent.resourcePool
         elif cluster:
             host_obj = None
             cluster_obj = self.get_obj([vim.ClusterComputeResource], cluster)
+            if not cluster_obj:
+                print "Cluster({}) does not exist. Skip creation VM: {}.".format(cluster, name)
+                return
+            if not any(ds.name == storage_name for ds in cluster_obj.datastore):
+                print "Datastore({}) does not exist on Cluster({}). Skip creation VM: {}.".format(storage_name, cluster, name)
+                return
             vm_folder = cluster_obj.parent.parent.vmFolder
             resource_pool = cluster_obj.resourcePool
         else:
-            print "Need to specify Cluster or Host name where you want to create vm."
-            sys.exit(1)
+            print "Need to specify Cluster or Host name where you want to create vm. Skip creation VM: {}.".format(name)
+            return
 
         vmx_file = self.vmx_file_info(storage_name, name)
 
@@ -285,37 +300,51 @@ class Vm(Vcenter_base, Vcenter_obj_tpl):
 
 class Dvs(Vcenter_base, Vcenter_obj_tpl):
     def create(self, dvs_name, private_vlan):
+        dvs_obj = self.get_obj([vim.DistributedVirtualSwitch], dvs_name)
+        if dvs_obj:
+            print "DVS({}) already exist. Skip creation DVS: {}.".format(dvs_name, dvs_name)
+            return dvs_obj
         dvs_spec = self.dvs_info(dvs_name, private_vlan)
-
         print "Creating DVS: ", dvs_name
-
         task = self.network_folder.CreateDVS_Task(dvs_spec)
         self.wait_for_tasks(self.service_instance, [task])
 
     def add_hosts(self, hosts_list, dvs_name, attach_uplink):
-        dvs = self.get_obj([vim.DistributedVirtualSwitch], dvs_name)
-
+        dvs_obj = self.get_obj([vim.DistributedVirtualSwitch], dvs_name)
+        if not dvs_obj:
+            print "DVS({}) does not exist. Skip adding Hosts: {}.".format(dvs_name, str(hosts_list))
+            return
         for h in hosts_list:
             host = h['host']
             uplink = h['uplink']
+            if any(dvs_host.config.host.name == host for dvs_host in dvs_obj.config.host):
+                print "Host({}) already adding to DVS({}). Skip adding Host: {}.".format(host, dvs_name, host)
+                continue
             if not attach_uplink:
                 uplink = None
             host_obj = self.get_obj([vim.HostSystem], host)
             dvs_host_spec = self.dvs_host_info(host_obj, uplink)
-            dvs_host_spec.configVersion = dvs.config.configVersion
+            dvs_host_spec.configVersion = dvs_obj.config.configVersion
             print "Adding {} to DVS: {}".format(host, dvs_name)
-            task = dvs.ReconfigureDvs_Task(dvs_host_spec)
+            task = dvs_obj.ReconfigureDvs_Task(dvs_host_spec)
             self.wait_for_tasks(self.service_instance, [task])
 
 
 class Dvpg(Vcenter_base, Vcenter_obj_tpl):
     def create(self, dvs_name, dv_pg_ports_num=128, dv_pg_name=None, vlan_type='access', vlan_list=[0]):
-        dvs = self.get_obj([vim.DistributedVirtualSwitch], dvs_name)
         if not dv_pg_name:
             dv_pg_name = dvs_name + '-PG'
+        dvs_obj = self.get_obj([vim.DistributedVirtualSwitch], dvs_name)
+        if not dvs_obj:
+            print "DVS({}) does not exist. Skip creation DVS-PG: {}.".format(dvs_name, dv_pg_name)
+            return
+        dv_pg_obj = self.get_obj([vim.dvs.DistributedVirtualPortgroup], dv_pg_name)
+        if dv_pg_obj:
+            print "DVS-PG({}) already exist. Skip creation DVS-PG: {}.".format(dv_pg_name, dv_pg_name)
+            return
         dv_pg_spec = self.dvs_pg_info(dv_pg_name, dv_pg_ports_num, vlan_type, vlan_list)
         print "Adding PG: {} to DVS: {}".format(dv_pg_name, dvs_name)
-        task = dvs.AddDVPortgroup_Task([dv_pg_spec])
+        task = dvs_obj.AddDVPortgroup_Task([dv_pg_spec])
         self.wait_for_tasks(self.service_instance, [task])
 
 
@@ -327,15 +356,15 @@ if __name__ == '__main__':
     # vm = Vm(user_data)
     # vm.connect_to_vcenter()
     # vm.add_disk(1)
-    # vm.add_nic(dv_pg_name='Contrail-PG')
-    # vm.create(name='TestVM8', cpu=1, memory=128, storage_name='nfs', cluster='Cluster1')
+    # vm.add_nic(dv_pg_name='dvPortGroup')
+    # vm.create(name='TestVM3', cpu=1, memory=128, storage_name='nfs1', cluster='Cluster1')
 
     # dvs = Dvs(user_data)
     # dvs.connect_to_vcenter()
-    # dvs.create(dvs_name='Contrail1', private_vlan=False)
-    # dvs.add_hosts(hosts_list=hosts, dvs_name='Contrail1', attach_uplink=True)
+    # dvs.create(dvs_name='dvSwitch', private_vlan=False)
+    # dvs.add_hosts(hosts_list=hosts, dvs_name='dvSwitch', attach_uplink=True)
 
-    # dvpg = Dvpg(user_data)
-    # dvpg.connect_to_vcenter()
-    # dvpg.create(dvs_name='Contrail1', dv_pg_name='pgg1', vlan_type='access', vlan_list=[0])
-    # dvpg.create(dvs_name='Contrail1', dv_pg_name='pgg2', vlan_type='trunk', vlan_list=[0,1024])
+    dvpg = Dvpg(user_data)
+    dvpg.connect_to_vcenter()
+    dvpg.create(dvs_name='dvSwitch', dv_pg_name='pgg1', vlan_type='access', vlan_list=[0])
+    dvpg.create(dvs_name='dvSwitch', dv_pg_name='pgg2', vlan_type='trunk', vlan_list=[0,1024])
