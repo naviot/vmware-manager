@@ -16,7 +16,8 @@ class Vcenter_base(object):
         elif si:
             self.service_instance = si
             self.content = self.service_instance.RetrieveContent()
-            self.network_folder = self.content.rootFolder.childEntity[0].networkFolder
+            self.datacenter = self.content.rootFolder.childEntity[0]
+            self.network_folder = self.datacenter.networkFolder
         else:
             print 'Need to specify credential for vcenter (user_data) or service instance object (si)'
 
@@ -26,7 +27,8 @@ class Vcenter_base(object):
                                                      pwd=self.vc_pass,
                                                      port=443)
         self.content = self.service_instance.RetrieveContent()
-        self.network_folder = self.content.rootFolder.childEntity[0].networkFolder
+        self.datacenter = self.content.rootFolder.childEntity[0]
+        self.network_folder = self.datacenter.networkFolder
         atexit.register(connect.Disconnect, self.service_instance)
         return self.service_instance
 
@@ -87,6 +89,14 @@ class Vcenter_base(object):
                 obj = c
                 break
         return obj
+
+    def get_all_hosts(self):
+        host_list = list()
+        for cl in self.datacenter.hostFolder.childEntity:
+            for h in cl.host:
+                host = h.name
+                host_list.append(host)
+        return host_list
 
 
 class Vcenter_obj_tpl(object):
@@ -314,7 +324,7 @@ class Dvs(Vcenter_base, Vcenter_obj_tpl):
             print "DVS({}) already exist. Skip creation DVS: {}.".format(dvs_name, dvs_name)
             return dvs_obj
         dvs_spec = self.dvs_info(dvs_name, private_vlan)
-        print "Creating DVS: ", dvs_name
+        print "Creating DVS:", dvs_name
         task = self.network_folder.CreateDVS_Task(dvs_spec)
         self.wait_for_tasks(self.service_instance, [task])
 
@@ -360,21 +370,45 @@ class Dvpg(Vcenter_base, Vcenter_obj_tpl):
 
 if __name__ == '__main__':
     user_data = {'vcenter_ip': '172.16.0.145', 'vcenter_user': 'root', 'vcenter_password': 'vmware'}
-    hosts = [{'host': '172.16.0.250', 'uplink': 'vmnic1'}, {'host': '172.16.0.252', 'uplink': 'vmnic1'},
-             {'host': '172.16.0.253', 'uplink': 'vmnic1'}]
+    dvs_external = 'Contrail-DVS-Ext'
+    dvs_internal = 'Contrail-DVS-Int'
+    dvpg_external = dvs_external + '-PG'
+    dvpg_internal = dvs_internal + '-PG'
+    uplink_name = 'vmnic1'
+    storage_name = 'nfs'
+    vm_disk_size = 20  # GB
+    vm_cpu = 2  # Amount
+    vm_memory = 1024  # MB
 
     vcenter_connect = Vcenter_base(user_data)
     si = vcenter_connect.connect_to_vcenter()
-
+    hosts = vcenter_connect.get_all_hosts()
+    host_list = [{'host': host, 'uplink': uplink_name} for host in hosts]
     vm = Vm(si=si)
-    vm.add_disk(1)
-    vm.add_nic(dv_pg_name='dvPortGroup')
-    vm.create(name='TestVM96', cpu=1, memory=128, storage_name='nfs', cluster='Cluster1')
+    dvs = Dvs(si=si)
+    dvpg = Dvpg(si=si)
 
-    # dvs = Dvs(si=si)
-    # dvs.create(dvs_name='dvSwitch', private_vlan=False)
-    # dvs.add_hosts(hosts_list=hosts, dvs_name='dvSwitch', attach_uplink=True)
+    # Create Distributed Switch to connect contrail vm with fuel master node
+    dvs.create(dvs_name=dvs_external, private_vlan=False)
+    # Connect all esxi hosts to dvs
+    dvs.add_hosts(hosts_list=host_list, dvs_name=dvs_external, attach_uplink=True)
+    # Add port group to dvs
+    dvpg.create(dv_pg_name=dvpg_external, dvs_name=dvs_external, vlan_type='trunk', vlan_list=[0, 4094])
 
-    # dvpg = Dvpg(si=si)
-    # dvpg.create(dvs_name='dvSwitch', dv_pg_name='pgg1', vlan_type='access', vlan_list=[0])
-    # dvpg.create(dvs_name='dvSwitch', dv_pg_name='pgg2', vlan_type='trunk', vlan_list=[0, 1024])
+    # Create Distributed Switch for internal vmware traffic
+    dvs.create(dvs_name=dvs_internal, private_vlan=True)
+    # Connect all esxi hosts to dvs
+    dvs.add_hosts(hosts_list=host_list, dvs_name=dvs_internal, attach_uplink=False)
+    # Add port group to dvs
+    dvpg.create(dv_pg_name=dvpg_internal, dvs_name=dvs_internal, vlan_type='trunk', vlan_list=[0, 4094])
+
+    # Specify disk for contrail vm
+    vm.add_disk(vm_disk_size)
+    # Specify network adapter for contrail vm
+    vm.add_nic(dv_pg_name=dvpg_external)
+    vm.add_nic(dv_pg_name=dvpg_internal)
+    # Create contrail vm on all hosts in datacenter
+    for h in hosts:
+        vm_name = 'ContrailVM-' + h
+        vm.create(name=vm_name, cpu=vm_cpu, memory=vm_memory, storage_name=storage_name, host=h)
+
