@@ -8,10 +8,17 @@ from pyVmomi import vmodl
 
 
 class Vcenter_base(object):
-    def __init__(self, user_data):
-        self.vc_ip = user_data['vcenter_ip']
-        self.vc_user = user_data['vcenter_user']
-        self.vc_pass = user_data['vcenter_password']
+    def __init__(self, user_data=None, si=None):
+        if user_data:
+            self.vc_ip = user_data['vcenter_ip']
+            self.vc_user = user_data['vcenter_user']
+            self.vc_pass = user_data['vcenter_password']
+        elif si:
+            self.service_instance = si
+            self.content = self.service_instance.RetrieveContent()
+            self.network_folder = self.content.rootFolder.childEntity[0].networkFolder
+        else:
+            print 'Need to specify credential for vcenter (user_data) or service instance object (si)'
 
     def connect_to_vcenter(self):
         self.service_instance = connect.SmartConnect(host=self.vc_ip,
@@ -21,6 +28,7 @@ class Vcenter_base(object):
         self.content = self.service_instance.RetrieveContent()
         self.network_folder = self.content.rootFolder.childEntity[0].networkFolder
         atexit.register(connect.Disconnect, self.service_instance)
+        return self.service_instance
 
     def wait_for_tasks(self, service_instance, tasks):
         """Given the service instance si and tasks, it returns after all the
@@ -219,8 +227,8 @@ class Vcenter_obj_tpl(object):
 
 
 class Vm(Vcenter_base, Vcenter_obj_tpl):
-    def __init__(self, user_data):
-        super(Vm, self).__init__(user_data)
+    def __init__(self, user_data=None, si=None):
+        super(Vm, self).__init__(user_data, si)
         self._unit_number = None
         self._nic_unit_number = None
         self.vm_devices = list()
@@ -273,7 +281,8 @@ class Vm(Vcenter_base, Vcenter_obj_tpl):
                 print "Cluster({}) does not exist. Skip creation VM: {}.".format(cluster, name)
                 return
             if not any(ds.name == storage_name for ds in cluster_obj.datastore):
-                print "Datastore({}) does not exist on Cluster({}). Skip creation VM: {}.".format(storage_name, cluster, name)
+                print "Datastore({}) does not exist on Cluster({}). Skip creation VM: {}.".format(storage_name, cluster,
+                                                                                                  name)
                 return
             vm_folder = cluster_obj.parent.parent.vmFolder
             resource_pool = cluster_obj.resourcePool
@@ -315,6 +324,7 @@ class Dvs(Vcenter_base, Vcenter_obj_tpl):
             print "DVS({}) does not exist. Skip adding Hosts: {}.".format(dvs_name, str(hosts_list))
             return
         for h in hosts_list:
+            # FIXME it can be implement for all hosts together
             host = h['host']
             uplink = h['uplink']
             if any(dvs_host.config.host.name == host for dvs_host in dvs_obj.config.host):
@@ -353,18 +363,18 @@ if __name__ == '__main__':
     hosts = [{'host': '172.16.0.250', 'uplink': 'vmnic1'}, {'host': '172.16.0.252', 'uplink': 'vmnic1'},
              {'host': '172.16.0.253', 'uplink': 'vmnic1'}]
 
-    # vm = Vm(user_data)
-    # vm.connect_to_vcenter()
-    # vm.add_disk(1)
-    # vm.add_nic(dv_pg_name='dvPortGroup')
-    # vm.create(name='TestVM3', cpu=1, memory=128, storage_name='nfs1', cluster='Cluster1')
+    vcenter_connect = Vcenter_base(user_data)
+    si = vcenter_connect.connect_to_vcenter()
 
-    # dvs = Dvs(user_data)
-    # dvs.connect_to_vcenter()
+    vm = Vm(si=si)
+    vm.add_disk(1)
+    vm.add_nic(dv_pg_name='dvPortGroup')
+    vm.create(name='TestVM96', cpu=1, memory=128, storage_name='nfs', cluster='Cluster1')
+
+    # dvs = Dvs(si=si)
     # dvs.create(dvs_name='dvSwitch', private_vlan=False)
     # dvs.add_hosts(hosts_list=hosts, dvs_name='dvSwitch', attach_uplink=True)
 
-    dvpg = Dvpg(user_data)
-    dvpg.connect_to_vcenter()
-    dvpg.create(dvs_name='dvSwitch', dv_pg_name='pgg1', vlan_type='access', vlan_list=[0])
-    dvpg.create(dvs_name='dvSwitch', dv_pg_name='pgg2', vlan_type='trunk', vlan_list=[0,1024])
+    # dvpg = Dvpg(si=si)
+    # dvpg.create(dvs_name='dvSwitch', dv_pg_name='pgg1', vlan_type='access', vlan_list=[0])
+    # dvpg.create(dvs_name='dvSwitch', dv_pg_name='pgg2', vlan_type='trunk', vlan_list=[0, 1024])
