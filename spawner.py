@@ -316,6 +316,17 @@ class Vm(Vcenter_base, Vcenter_obj_tpl):
         task = vm_folder.CreateVM_Task(config=self.config, pool=resource_pool, host=host_obj)
         self.wait_for_tasks(self.service_instance, [task])
 
+    def power_on(self, name):
+        vm_obj = self.get_obj([vim.VirtualMachine], name)
+        if not vm_obj:
+            print "VM({}) does not exist. Skip power on VM: {}.".format(name, name)
+            return
+        if vm_obj.summary.runtime.powerState == 'poweredOn':
+            print "VM({}) already power on. Skip power on VM: {}.".format(name, name)
+            return
+        task = vm_obj.PowerOnVM_Task()
+        self.wait_for_tasks(self.service_instance, [task])
+
 
 class Dvs(Vcenter_base, Vcenter_obj_tpl):
     def create(self, dvs_name, private_vlan):
@@ -411,4 +422,5 @@ if __name__ == '__main__':
     for h in hosts:
         vm_name = 'ContrailVM-' + h
         vm.create(name=vm_name, cpu=vm_cpu, memory=vm_memory, storage_name=storage_name, host=h)
+        vm.power_on(vm_name)
 
